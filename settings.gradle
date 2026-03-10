@@ -1,0 +1,2 @@
+rootProject.name = "xproxy-android"
+include ':app'

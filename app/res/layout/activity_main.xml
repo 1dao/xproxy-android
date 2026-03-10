@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="XProxy SSH 配置"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="24dp"
+    />
+
+    <EditText
+        android:id="@+id/etIp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="SSH 服务器 IP"
+        android:inputType="textUri"
+        android:text=""
+        android:layout_marginBottom="12dp"
+    />
+
+    <EditText
+        android:id="@+id/etPort"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="端口 (例如: 22)"
+        android:inputType="number"
+        android:text="22"
+        android:layout_marginBottom="12dp"
+    />
+
+    <EditText
+        android:id="@+id/etUser"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="用户名"
+        android:inputType="textVisiblePassword"
+        android:text=""
+        android:layout_marginBottom="12dp"
+    />
+
+    <EditText
+        android:id="@+id/etPassword"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="密码"
+        android:inputType="textPassword"
+        android:text=""
+        android:layout_marginBottom="20dp"
+    />
+
+    <Button
+        android:id="@+id/btnToggleVpn"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:text="启动 VPN"
+        android:layout_marginBottom="12dp"
+    />
+
+    <!-- 日志标题 -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="运行日志:"
+        android:textSize="14sp"
+        android:layout_marginBottom="6dp"
+    />
+
+    <!-- 日志窗口 - 占据剩余所有空间 -->
+    <ScrollView
+        android:id="@+id/logScrollView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#000000"
+        android:padding="8dp"
+    >
+        <TextView
+            android:id="@+id/tvLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:text=""
+        />
+    </ScrollView>
+
+</LinearLayout>

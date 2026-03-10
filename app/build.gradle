@@ -1,0 +1,66 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'app.xproxy'
+    // 建议同步升级到 34，与 Build Tools 匹配
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "app.xproxy"
+        minSdk 21
+        // 建议同步升级到 34
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        vectorDrawables {
+            useSupportLibrary = true
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared"
+                cFlags "-std=c11 -DWOLFSSL_USER_SETTINGS -DWOLFSSH_USER_SETTINGS"
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    // 也可以显式指定版本（虽然现在 AGP 会自动选 34）
+    buildToolsVersion "34.0.0"
+
+    sourceSets {
+        main {
+            java.srcDirs = ['xproxy']
+            assets.srcDirs = ['assets']
+            res.srcDirs = ['res']
+            jniLibs.srcDirs = ['cpp']
+            manifest.srcFile 'AndroidManifest.xml'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.9.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.8.0'
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+}

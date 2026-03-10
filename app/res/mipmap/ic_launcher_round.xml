@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Round launcher icon for API < 26, uses vector drawable -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 圆形背景裁剪 -->
+    <clip-path android:pathData="M54,54m-54,0a54,54 0,1 1,108 0a54,54 0,1 1,-108 0"/>
+
+    <!-- 背景 - 天青色 -->
+    <path
+        android:fillColor="#00BCD4"
+        android:pathData="M0,0h108v108h-108z"/>
+
+    <!-- 背景底部水面 -->
+    <path
+        android:fillColor="#00838F"
+        android:pathData="M0,85h108v23h-108z"/>
+
+    <!-- 桥身 - 白色石桥 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M15,70 L93,70 L93,58 C80,50 68,45 54,45 C40,45 28,50 15,58 Z"/>
+
+    <!-- 桥身底部阴影 -->
+    <path
+        android:fillColor="#E0E0E0"
+        android:pathData="M15,70 L93,70 L93,65 L15,65 Z"/>
+
+    <!-- 桥拱 - 半圆形桥洞 -->
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M54,45 C72,45 85,52 91,62 L17,62 C23,52 36,45 54,45 Z"/>
+
+    <!-- 桥洞内灯光 -->
+    <path
+        android:fillColor="#FF9800"
+        android:pathData="M54,52 C62,52 68,55 72,60 L36,60 C40,55 46,52 54,52 Z"/>
+
+    <!-- 桥栏杆 - 左侧 -->
+    <path
+        android:fillColor="#9E9E9E"
+        android:pathData="M18,58 L22,58 L22,52 L18,52 Z"/>
+    <path
+        android:fillColor="#9E9E9E"
+        android:pathData="M26,58 L30,58 L30,52 L26,52 Z"/>
+    <path
+        android:fillColor="#9E9E9E"
+        android:pathData="M34,58 L38,58 L38,52 L34,52 Z"/>
+
+    <!-- 桥栏杆 - 右侧 -->
+    <path
+        android:fillColor="#9E9E9E"
+        android:pathData="M70,58 L74,58 L74,52 L70,52 Z"/>
+    <path
+        android:fillColor="#9E9E9E"
+        android:pathData="M78,58 L82,58 L82,52 L78,52 Z"/>
+    <path
+        android:fillColor="#9E9E9E"
+        android:pathData="M86,58 L90,58 L90,52 L86,52 Z"/>
+
+    <!-- 左侧箭头 - 连接/代理 -->
+    <path
+        android:fillColor="#FFEB3B"
+        android:pathData="M6,65 L14,58 L10,58 L10,65 L14,65 L6,72 Z"/>
+
+    <!-- 右侧箭头 - 连接/代理 -->
+    <path
+        android:fillColor="#FFEB3B"
+        android:pathData="M102,65 L94,58 L98,58 L98,65 L94,65 L102,72 Z"/>
+
+    <!-- 桥面线条 -->
+    <path
+        android:strokeColor="#BDBDBD"
+        android:strokeWidth="0.5"
+        android:pathData="M15,63 L93,63"/>
+
+    <!-- 桥洞拱形线条 -->
+    <path
+        android:strokeColor="#42A5F5"
+        android:strokeWidth="1"
+        android:pathData="M30,62 Q54,45 78,62"/>
+</vector>

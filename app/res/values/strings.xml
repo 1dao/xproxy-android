@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XProxy VPN</string>
+    <string name="shortcut_start_vpn">启动VPN</string>
+    <string name="shortcut_start_vpn_long">快速启动SSH VPN代理</string>
+    <string name="shortcut_stop_vpn">停止VPN</string>
+    <string name="shortcut_stop_vpn_long">停止当前VPN连接</string>
+    <string name="shortcut_status">查看状态</string>
+    <string name="shortcut_status_long">查看VPN连接状态</string>
+    <string name="shortcut_vpn_disabled">VPN服务未配置</string>
+</resources>

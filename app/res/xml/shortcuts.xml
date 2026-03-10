@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 快速启动VPN快捷方式 -->
+    <shortcut
+        android:shortcutId="start_vpn"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_send"
+        android:shortcutShortLabel="@string/shortcut_start_vpn"
+        android:shortcutLongLabel="@string/shortcut_start_vpn_long"
+        android:shortcutDisabledMessage="@string/shortcut_vpn_disabled">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="app.xproxy"
+            android:targetClass="app.xproxy.MainActivity">
+            <extra android:name="action" android:value="START" />
+        </intent>
+        <categories android:name="android.intent.category.CONVERSATION" />
+    </shortcut>
+
+    <!-- 快速停止VPN快捷方式 -->
+    <shortcut
+        android:shortcutId="stop_vpn"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_close_clear_cancel"
+        android:shortcutShortLabel="@string/shortcut_stop_vpn"
+        android:shortcutLongLabel="@string/shortcut_stop_vpn_long"
+        android:shortcutDisabledMessage="@string/shortcut_vpn_disabled">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="app.xproxy"
+            android:targetClass="app.xproxy.MainActivity">
+            <extra android:name="action" android:value="STOP" />
+        </intent>
+        <categories android:name="android.intent.category.CONVERSATION" />
+    </shortcut>
+
+    <!-- 查看状态快捷方式 -->
+    <shortcut
+        android:shortcutId="status"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_info_details"
+        android:shortcutShortLabel="@string/shortcut_status"
+        android:shortcutLongLabel="@string/shortcut_status_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="app.xproxy"
+            android:targetClass="app.xproxy.MainActivity">
+            <extra android:name="action" android:value="STATUS" />
+        </intent>
+        <categories android:name="android.intent.category.CONVERSATION" />
+    </shortcut>
+</shortcuts>
