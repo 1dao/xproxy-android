@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Looper
 import android.os.ParcelFileDescriptor
@@ -96,7 +97,12 @@ class MyVpnService : VpnService() {
         val action = intent?.action
         when {
             action == "START" -> {
-                startForeground(1, createForegroundNotification("正在连接...", "正在建立 SSH 隧道"))
+                val notification = createForegroundNotification("正在连接...", "正在建立 SSH 隧道")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
+                } else {
+                    startForeground(1, notification)
+                }
 
                 val ip = intent.getStringExtra(KEY_SSH_IP)?.trim()?.trimEnd(':') ?: ""
                 val port = intent.getIntExtra(KEY_SSH_PORT, 22)
