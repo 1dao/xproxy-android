@@ -30,6 +30,11 @@ int tun_handler_init(const TunHandlerConfig* config);
 void tun_handler_cleanup(void);
 
 /**
+ * 周期性维护（空闲连接回收），由主事件循环调用，内部自行限频
+ */
+void tun_handler_update(void);
+
+/**
  * 获取 TUN 处理器的 socket (用于事件监听)
  * @return socket 描述符, -1 表示未初始化
  */

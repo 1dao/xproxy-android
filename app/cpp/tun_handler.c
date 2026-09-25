@@ -91,11 +91,17 @@ typedef struct {
     uint32_t ack_num;  /* TCP 确认号 */
     TunConnState state; /* 连接状态 */
 
-    /* 数据缓冲区 */
+    /* 数据缓冲区
+     * write_buffer 只装客户端应用数据，CONNECTED 之前只积累不发送；
+     * socks_buf 只装 SOCKS5 协议报文（greeting/CONNECT），始终优先发送。
+     * 两者分开，避免应用数据插进握手序列污染协议。
+     */
     char read_buffer[8192];
     int read_buffer_size;
     char write_buffer[8192];
     int write_buffer_size;
+    char socks_buf[64];
+    int socks_buf_size;
 
     /* SOCKS5 握手阶段
      * 0 = 尚未发送握手
@@ -164,6 +170,7 @@ static TunConnection* find_or_create_connection(uint32_t src_ip, uint16_t src_po
             g_connections[i].state = TUN_CONN_INIT;
             g_connections[i].read_buffer_size = 0;
             g_connections[i].write_buffer_size = 0;
+            g_connections[i].socks_buf_size = 0;
             g_connections[i].socks_stage = 0;
             g_connections[i].socks_need_len = 0;
             g_connections[i].retry_count = 0;
@@ -177,7 +184,7 @@ static TunConnection* find_or_create_connection(uint32_t src_ip, uint16_t src_po
 
 /* 计算 IP 校验和 */
 static uint16_t ip_checksum(void* vdata, size_t length) {
-    char* data = (char*)vdata;
+    uint8_t* data = (uint8_t*)vdata;  /* 必须无符号：char 在 x86 上有符号，会导致校验和错误 */
     uint32_t acc = 0;
     uint8_t swapped = 0;
 
@@ -311,6 +318,77 @@ static uint16_t tcp_checksum(struct sockaddr_in* src_addr, struct sockaddr_in* d
     return htons(~(uint16_t)sum);
 }
 
+/* 构造 UDP 响应包并写入 TUN（用于 DNS 应答回注）
+ * IPv4 下 UDP 校验和填 0 表示不校验，协议栈接受。
+ */
+static int send_udp_response(TunConnection* conn, const uint8_t* data, int data_len) {
+    uint8_t packet[4096];
+    int ip_header_len = 20;
+    int udp_header_len = 8;
+    int total_len = ip_header_len + udp_header_len + data_len;
+
+    if (data_len <= 0 || total_len > (int)sizeof(packet)) {
+        TLOGE("[TUN] Invalid UDP response length: %d", data_len);
+        return -1;
+    }
+
+    struct ip_header* ip = (struct ip_header*)packet;
+    ip->ver_ihl = 0x45;
+    ip->tos = 0;
+    ip->total_len = htons(total_len);
+    ip->id = htons(0x1234);
+    ip->flags_off = 0;
+    ip->ttl = 64;
+    ip->proto = 17;  /* UDP */
+    ip->check = 0;
+    ip->saddr = conn->dst_ip;   /* 源地址 = 原目标地址 */
+    ip->daddr = conn->src_ip;   /* 目标地址 = 原源地址 */
+    ip->check = ip_checksum(ip, ip_header_len);
+
+    struct udp_header* udp = (struct udp_header*)(packet + ip_header_len);
+    udp->src_port = htons(conn->dst_port);
+    udp->dst_port = htons(conn->src_port);
+    udp->length = htons(udp_header_len + data_len);
+    udp->checksum = 0;
+
+    memcpy(packet + ip_header_len + udp_header_len, data, data_len);
+
+    int n = write(g_tun_fd, packet, total_len);
+    if (n < 0) {
+        TLOGE("[TUN] Failed to write UDP response to TUN: %s", strerror(errno));
+        return -1;
+    }
+    TLOGD("[TUN] Sent UDP response: %d bytes to port %d", n, conn->src_port);
+    return n;
+}
+
+/* DNS-over-TCP 响应流分帧：read_buffer 中按 [2字节长度][DNS报文] 逐条取出，
+ * 转成 UDP 包写回 TUN。返回处理的报文条数。
+ */
+static void close_connection(TunConnection* conn);
+static int drain_dns_responses(TunConnection* conn) {
+    int count = 0;
+    while (conn->read_buffer_size >= 2) {
+        int msg_len = ((uint8_t)conn->read_buffer[0] << 8) | (uint8_t)conn->read_buffer[1];
+        if (msg_len <= 0) {
+            TLOGE("[TUN] Invalid DNS-over-TCP length: %d", msg_len);
+            close_connection(conn);
+            return count;
+        }
+        if (conn->read_buffer_size < 2 + msg_len) {
+            break;  /* 报文不完整，等更多数据 */
+        }
+        send_udp_response(conn, (uint8_t*)conn->read_buffer + 2, msg_len);
+        count++;
+        int remain = conn->read_buffer_size - 2 - msg_len;
+        if (remain > 0) {
+            memmove(conn->read_buffer, conn->read_buffer + 2 + msg_len, remain);
+        }
+        conn->read_buffer_size = remain;
+    }
+    return count;
+}
+
 /* 连接清理函数 */
 static void close_connection(TunConnection* conn) {
     if (!conn || !conn->active) return;
@@ -354,8 +432,10 @@ static void close_connection(TunConnection* conn) {
             TLOGD("[TUN] Proxy connection closed");
         }
 
-        /* 发送 FIN */
-        send_tcp_response(conn, NULL, 0, 0x11);  /* FIN+ACK */
+        /* TCP 连接需要通知客户端关闭；DNS(UDP) 会话直接清理 */
+        if (conn->protocol == 6) {
+            send_tcp_response(conn, NULL, 0, 0x11);  /* FIN+ACK */
+        }
 
         /* 清理连接 */
         close_connection(conn);
@@ -386,15 +466,14 @@ static void close_connection(TunConnection* conn) {
                     req[1] = 0x01;     // CMD=CONNECT
                     req[2] = 0x00;     // RSV
                     req[3] = 0x01;     // ATYP=IPv4
-                    uint32_t ip = htonl(conn->dst_ip);
+                    uint32_t ip = conn->dst_ip;  /* 来自 IP 头，已是网络字节序，不可再 htonl */
                     memcpy(&req[4], &ip, 4);
                     uint16_t port = htons(conn->dst_port);
                     memcpy(&req[8], &port, 2);
-                    if (conn->write_buffer_size + sizeof(req) <= sizeof(conn->write_buffer)) {
-                        memcpy(conn->write_buffer + conn->write_buffer_size, req, sizeof(req));
-                        conn->write_buffer_size += sizeof(req);
-                        TLOGI("[TUN] CONNECT request added to write buffer: size=%d, dst=%d.%d.%d.%d:%d",
-                               conn->write_buffer_size,
+                    if (conn->socks_buf_size + sizeof(req) <= sizeof(conn->socks_buf)) {
+                        memcpy(conn->socks_buf + conn->socks_buf_size, req, sizeof(req));
+                        conn->socks_buf_size += sizeof(req);
+                        TLOGI("[TUN] CONNECT request queued: dst=%d.%d.%d.%d:%d",
                                (conn->dst_ip >> 0) & 0xFF, (conn->dst_ip >> 8) & 0xFF,
                                (conn->dst_ip >> 16) & 0xFF, (conn->dst_ip >> 24) & 0xFF,
                                conn->dst_port);
@@ -419,9 +498,33 @@ static void close_connection(TunConnection* conn) {
                 if (conn->read_buffer[0] == 0x05 && conn->read_buffer[1] == 0x00) {
                     TLOGI("[TUN] SOCKS5 CONNECT succeeded");
                     conn->state = TUN_CONN_CONNECTED;
-                    conn->read_buffer_size = 0;
+
+                    /* 回复后面可能已粘连了隧道数据，摘出来按正常数据处理 */
+                    int extra = conn->read_buffer_size - 10;
+                    if (extra > 0) {
+                        memmove(conn->read_buffer, conn->read_buffer + 10, extra);
+                    }
+                    conn->read_buffer_size = extra;
+                    if (extra > 0) {
+                        if (conn->protocol == 17) {
+                            drain_dns_responses(conn);
+                        } else {
+                            send_tcp_response(conn, (uint8_t*)conn->read_buffer, extra, 0x18);
+                            conn->seq_num += extra;
+                            conn->read_buffer_size = 0;
+                        }
+                    }
+
+                    /* 握手期间积压的客户端数据现在可以发了 */
+                    if (conn->active && conn->write_buffer_size > 0) {
+                        xpoll_add_event(g_xpoll, conn->proxy_sock, XPOLL_WRITABLE,
+                                       proxy_read_callback, proxy_write_callback, proxy_error_callback, conn);
+                    }
                 } else {
                     TLOGE("[TUN] SOCKS5 CONNECT failed rep=0x%02X", (uint8_t)conn->read_buffer[1]);
+                    if (conn->protocol == 6) {
+                        send_tcp_response(conn, NULL, 0, 0x14);  /* RST+ACK 通知客户端 */
+                    }
                     close_connection(conn);
                 }
             }
@@ -431,41 +534,73 @@ static void close_connection(TunConnection* conn) {
 
     // 只有连接成功后才将 proxy 中的数据写回 TUN
     if (conn->state == TUN_CONN_CONNECTED) {
-        /* 发送数据到 TUN */
-        send_tcp_response(conn, buffer, n, 0x18);  /* PSH+ACK */
-        /* 更新序列号 */
-        conn->seq_num += n;
+        if (conn->protocol == 17) {
+            /* DNS-over-TCP 响应：积累后分帧转回 UDP */
+            if (conn->read_buffer_size + n > (int)sizeof(conn->read_buffer)) {
+                TLOGE("[TUN] DNS read buffer overflow");
+                close_connection(conn);
+                return;
+            }
+            memcpy(conn->read_buffer + conn->read_buffer_size, buffer, n);
+            conn->read_buffer_size += n;
+            conn->last_retry_time = time_get_ms();  /* 记录活跃时间供空闲回收 */
+            drain_dns_responses(conn);
+        } else {
+            /* 发送数据到 TUN */
+            send_tcp_response(conn, buffer, n, 0x18);  /* PSH+ACK */
+            /* 更新序列号 */
+            conn->seq_num += n;
+        }
     }
 }
 
-/* 代理 socket 可写回调 */
+/* 代理 socket 可写回调
+ * 发送顺序：SOCKS5 协议报文 (socks_buf) 永远优先；
+ * 客户端数据 (write_buffer) 只在握手完成 (CONNECTED) 后发送。
+ */
 static void proxy_write_callback(xPollState* loop, SOCKET_T fd, int mask, void* clientData) {
     TunConnection* conn = (TunConnection*)clientData;
-    if (!conn || !conn->active || conn->write_buffer_size <= 0) {
+    if (!conn || !conn->active) {
         return;
     }
 
-    TLOGI("[TUN] proxy_write_callback: sending %d bytes, socks_stage=%d", conn->write_buffer_size, conn->socks_stage);
-
-    int sent = send(fd, conn->write_buffer, conn->write_buffer_size, 0);
-    if (sent < 0) {
-        if (socket_check_eagain()) {
-            // Try again later
+    /* 1. 先发协议报文 */
+    if (conn->socks_buf_size > 0) {
+        int sent = send(fd, conn->socks_buf, conn->socks_buf_size, 0);
+        if (sent < 0) {
+            if (socket_check_eagain()) return;
+            TLOGE("[TUN] Proxy send error (socks): %s", strerror(errno));
+            close_connection(conn);
             return;
         }
-        TLOGE("[TUN] Proxy send error: %s", strerror(errno));
-        close_connection(conn);
-        return;
+        if (sent < conn->socks_buf_size) {
+            memmove(conn->socks_buf, conn->socks_buf + sent, conn->socks_buf_size - sent);
+            conn->socks_buf_size -= sent;
+            return;  /* 协议没发完，数据继续等 */
+        }
+        conn->socks_buf_size = 0;
     }
 
-    // Shift remaining data in buffer
-    if (sent < conn->write_buffer_size) {
-        memmove(conn->write_buffer, conn->write_buffer + sent, conn->write_buffer_size - sent);
-        conn->write_buffer_size -= sent;
-        // Keep write callback active to send remaining data
-    } else {
+    /* 2. 握手完成后发客户端数据 */
+    if (conn->state == TUN_CONN_CONNECTED && conn->write_buffer_size > 0) {
+        int sent = send(fd, conn->write_buffer, conn->write_buffer_size, 0);
+        if (sent < 0) {
+            if (socket_check_eagain()) return;
+            TLOGE("[TUN] Proxy send error (data): %s", strerror(errno));
+            close_connection(conn);
+            return;
+        }
+        if (sent < conn->write_buffer_size) {
+            memmove(conn->write_buffer, conn->write_buffer + sent, conn->write_buffer_size - sent);
+            conn->write_buffer_size -= sent;
+            return;
+        }
         conn->write_buffer_size = 0;
-        // Remove write event since no more data to send
+    }
+
+    /* 3. 没有可发送的数据了，移除可写事件（握手中积压的数据等 CONNECTED 时重新注册） */
+    if (conn->socks_buf_size == 0 &&
+        (conn->state != TUN_CONN_CONNECTED || conn->write_buffer_size == 0)) {
         xpoll_del_event(g_xpoll, fd, XPOLL_WRITABLE);
     }
 }
@@ -528,11 +663,11 @@ static SOCKET_T connect_to_socks5_async(TunConnection* conn) {
         return INVALID_SOCKET;
     }
 
-    /* 立即发送 SOCKS5 握手 (0x05,0x01,0x00)，其它数据会在 proxy_write_callback 中写出 */
+    /* 排队 SOCKS5 握手 (0x05,0x01,0x00)，由 proxy_write_callback 在连接可写后发出 */
     if (conn) {
         const uint8_t greet[] = {0x05, 0x01, 0x00};
-        memcpy(conn->write_buffer, greet, sizeof(greet));
-        conn->write_buffer_size = sizeof(greet);
+        memcpy(conn->socks_buf, greet, sizeof(greet));
+        conn->socks_buf_size = sizeof(greet);
         conn->socks_stage = 1;
         conn->socks_need_len = 2;  /* 等待方法选择响应，需要 2 字节 */
         TLOGI("[TUN] Sent SOCKS5 handshake: 0x05 0x01 0x00, waiting for method response");
@@ -579,6 +714,16 @@ static int handle_tcp_packet(const uint8_t* packet, int packet_len) {
         return -1;
     }
 
+    /* 非 SYN 包命中了新建条目 = 残留连接的杂散包（如对端关闭后的重传/FIN），
+     * 回 RST 让客户端立即放弃，避免幽灵连接占用连接表 */
+    if (conn->state == TUN_CONN_INIT && !((tcp_flags & 0x02) && !(tcp_flags & 0x10))) {
+        conn->seq_num = ack_num;
+        conn->ack_num = seq_num + 1;
+        send_tcp_response(conn, NULL, 0, 0x04);  /* RST */
+        close_connection(conn);
+        return 0;
+    }
+
     /* 处理 SYN 包 (新连接) */
     if ((tcp_flags & 0x02) && !(tcp_flags & 0x10)) {
         TLOGI("[TUN] New TCP connection: %d.%d.%d.%d:%d -> %d.%d.%d.%d:%d",
@@ -622,10 +767,12 @@ static int handle_tcp_packet(const uint8_t* packet, int packet_len) {
             int data_len = packet_len - ip_header_len - tcp_header_len;
             if (data_len > 0) {
                 const uint8_t* data = packet + ip_header_len + tcp_header_len;
-                if (conn->write_buffer_size + data_len <= sizeof(conn->write_buffer)) {
+                if (conn->write_buffer_size + data_len <= (int)sizeof(conn->write_buffer)) {
                     memcpy(conn->write_buffer + conn->write_buffer_size, data, data_len);
                     conn->write_buffer_size += data_len;
                 }
+                /* ACK 必须覆盖已收下的数据，否则客户端会重传导致重复缓冲 */
+                conn->ack_num = seq_num + data_len;
             }
             /* 发送 ACK 给客户端 */
             send_tcp_response(conn, NULL, 0, 0x10);
@@ -654,7 +801,11 @@ static int handle_tcp_packet(const uint8_t* packet, int packet_len) {
             memcpy(conn->write_buffer + conn->write_buffer_size, data, data_len);
             conn->write_buffer_size += data_len;
 
-            TLOGD("[TUN] Forwarded %d bytes to proxy", data_len);
+            /* 注册可写事件触发实际发送（事件掩码是合并语义，重复注册无害） */
+            xpoll_add_event(g_xpoll, conn->proxy_sock, XPOLL_WRITABLE,
+                           proxy_read_callback, proxy_write_callback, proxy_error_callback, conn);
+
+            TLOGD("[TUN] Buffered %d bytes for proxy", data_len);
 
             /* 发送 ACK 确认 */
             conn->ack_num += data_len;
@@ -662,9 +813,15 @@ static int handle_tcp_packet(const uint8_t* packet, int packet_len) {
         }
     }
 
-    /* 处理 FIN 包 */
+    /* 处理 FIN 包：确认对方 FIN 并发出我方 FIN（简化的四次挥手合并回复），
+     * 否则客户端会卡在 FIN_WAIT 等超时 */
     if (tcp_flags & 0x01) {
         TLOGI("[TUN] TCP connection closing");
+
+        int tcp_header_len = ((tcp->data_offset >> 4) & 0x0F) * 4;
+        int data_len = packet_len - ip_header_len - tcp_header_len;
+        conn->ack_num = seq_num + data_len + 1;  /* FIN 占一个序号 */
+        send_tcp_response(conn, NULL, 0, 0x11);  /* FIN+ACK */
 
         /* 关闭代理连接 */
         close_connection(conn);
@@ -682,8 +839,8 @@ static int handle_tcp_packet(const uint8_t* packet, int packet_len) {
 }
 
 /* 处理 UDP 包
- * 注意：SOCKS5 UDP 转发需要复杂的 UDP ASSOCIATE 协议支持。
- * 当前实现：仅支持 DNS 请求通过 TCP 转发到 SOCKS5 代理。
+ * DNS (端口 53)：转成 DNS-over-TCP 经 SOCKS5/SSH 隧道转发，响应回注为 UDP。
+ * 其它 UDP（如 QUIC 443）：静默丢弃，应用会自动回退到 TCP。
  */
 static int handle_udp_packet(const uint8_t* packet, int packet_len) {
     const struct ip_header* ip = (const struct ip_header*)packet;
@@ -702,16 +859,81 @@ static int handle_udp_packet(const uint8_t* packet, int packet_len) {
     uint16_t dst_port = ntohs(udp->dst_port);
     int udp_data_len = ntohs(udp->length) - 8;
 
-    TLOGD("[TUN] UDP packet: %d.%d.%d.%d:%d -> %d.%d.%d.%d:%d, length=%d",
+    if (dst_port != 53) {
+        TLOGD("[TUN] Dropping non-DNS UDP packet to port %d", dst_port);
+        return 0;
+    }
+
+    /* 校验 DNS 报文长度 */
+    if (udp_data_len <= 0 || ip_header_len + 8 + udp_data_len > packet_len) {
+        TLOGE("[TUN] Invalid DNS payload length: %d", udp_data_len);
+        return -1;
+    }
+    const uint8_t* payload = packet + ip_header_len + 8;
+
+    TLOGD("[TUN] DNS query: %d.%d.%d.%d:%d -> %d.%d.%d.%d:%d, %d bytes",
           (src_ip >> 0) & 0xFF, (src_ip >> 8) & 0xFF,
           (src_ip >> 16) & 0xFF, (src_ip >> 24) & 0xFF, src_port,
           (dst_ip >> 0) & 0xFF, (dst_ip >> 8) & 0xFF,
           (dst_ip >> 16) & 0xFF, (dst_ip >> 24) & 0xFF, dst_port, udp_data_len);
 
-    TLOGE("[TUN] UDP forwarding not fully implemented, dropping packet to %d.%d.%d.%d:%d",
-          (dst_ip >> 0) & 0xFF, (dst_ip >> 8) & 0xFF,
-          (dst_ip >> 16) & 0xFF, (dst_ip >> 24) & 0xFF, dst_port);
+    TunConnection* conn = find_or_create_connection(src_ip, src_port, dst_ip, dst_port, 17);
+    if (!conn) {
+        TLOGE("[TUN] DNS connection table full");
+        return -1;
+    }
+
+    /* DNS-over-TCP 帧：2 字节长度前缀 + 原始查询报文 */
+    if (conn->write_buffer_size + 2 + udp_data_len > (int)sizeof(conn->write_buffer)) {
+        TLOGE("[TUN] DNS write buffer overflow");
+        close_connection(conn);
+        return -1;
+    }
+    conn->write_buffer[conn->write_buffer_size]     = (udp_data_len >> 8) & 0xFF;
+    conn->write_buffer[conn->write_buffer_size + 1] = udp_data_len & 0xFF;
+    memcpy(conn->write_buffer + conn->write_buffer_size + 2, payload, udp_data_len);
+    conn->write_buffer_size += 2 + udp_data_len;
+    conn->last_retry_time = time_get_ms();
+
+    if (conn->state == TUN_CONN_INIT) {
+        /* 新 DNS 会话：经 SOCKS5 连接到原目标 DNS 服务器的 TCP 53 */
+        conn->proxy_sock = connect_to_socks5_async(conn);
+        if (conn->proxy_sock == INVALID_SOCKET) {
+            TLOGE("[TUN] Failed to connect DNS session to SOCKS5");
+            close_connection(conn);
+            return -1;
+        }
+        conn->state = TUN_CONN_CONNECTING;
+    } else if (conn->state == TUN_CONN_CONNECTED) {
+        /* 同一 socket 的后续查询（如 A/AAAA 并发）：注册可写事件冲刷 */
+        xpoll_add_event(g_xpoll, conn->proxy_sock, XPOLL_WRITABLE,
+                       proxy_read_callback, proxy_write_callback, proxy_error_callback, conn);
+    }
+    /* CONNECTING 状态下只积累，握手完成后统一冲刷 */
+
     return 0;
+}
+
+/* 周期性维护：回收空闲的 DNS 会话（DNS 一问一答，10 秒无活动即可关闭），
+ * 由主循环每次 tick 调用，内部限频为每秒一次。
+ */
+void tun_handler_update(void) {
+    static long64 last_sweep = 0;
+
+    if (!g_initialized) return;
+
+    long64 now = time_get_ms();
+    if (now - last_sweep < 1000) return;
+    last_sweep = now;
+
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        TunConnection* conn = &g_connections[i];
+        if (conn->active && conn->protocol == 17 &&
+            now - conn->last_retry_time > 10000) {
+            TLOGD("[TUN] Closing idle DNS session (port %d)", conn->src_port);
+            close_connection(conn);
+        }
+    }
 }
 
 /* TUN 设备读取回调 */

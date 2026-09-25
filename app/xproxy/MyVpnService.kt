@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -132,14 +133,20 @@ class MyVpnService : VpnService() {
     }
 
     private fun setupVpnTunnel(ip: String, port: Int, user: String, password: String) {
-        // just for keep process alive
         val builder = Builder()
             .setSession("XProxy")
             .addAddress("10.0.0.2", 24)
             .addDnsServer("8.8.8.8")
-            // .addRoute("1.1.1.1", 32)  // 全局路由
+            .addRoute("0.0.0.0", 0)  // 全局路由，流量进 TUN 由 native 层处理
             .setMtu(1500)
             .setBlocking(false)
+
+        // 排除自身，避免 native 层连接 SSH 服务器的流量再次进入 TUN 造成环路
+        try {
+            builder.addDisallowedApplication(packageName)
+        } catch (e: PackageManager.NameNotFoundException) {
+            Log.e(TAG, "addDisallowedApplication failed", e)
+        }
 
         vpnInterface = builder.establish()
         tunFd = vpnInterface?.fd ?: -1
@@ -163,8 +170,8 @@ class MyVpnService : VpnService() {
             Log.e(TAG, "读取 PAC 文件失败", e)
         }
 
-        // 启动 Native 代理
-        val result = startSshProxyNative(-1, ip, port, user, password, 1080, 7890, pacConfigPath)
+        // 启动 Native 代理（传入真实 TUN fd，native 层据此开启 VPN 模式）
+        val result = startSshProxyNative(tunFd, ip, port, user, password, 1080, 7890, pacConfigPath)
         if (result != 0) {
             Log.e(TAG, "startSshProxyNative 启动失败，返回值: $result")
             isRunning = false
