@@ -199,6 +199,12 @@ class MainActivity : Activity() {
     }
 
     private fun loadConfig() {
+        val prefs = getSharedPreferences(MyVpnService.PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.getString(MyVpnService.KEY_SSH_IP, null)?.let { ipEditText.setText(it) }
+        if (prefs.contains(MyVpnService.KEY_SSH_PORT)) {
+            portEditText.setText(prefs.getInt(MyVpnService.KEY_SSH_PORT, 22).toString())
+        }
+        prefs.getString(MyVpnService.KEY_SSH_USER, null)?.let { userEditText.setText(it) }
     }
 
     private fun saveConfig() {
